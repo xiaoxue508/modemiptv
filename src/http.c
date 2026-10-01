@@ -6,6 +6,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <pthread.h>
+#include <errno.h>
+#include <sys/time.h>
 
 /* ---------------- cookie jar ---------------- */
 typedef struct { char *name, *value; } ck_t;
@@ -102,6 +104,14 @@ static size_t header_cb(char *ptr, size_t size, size_t nmemb, void *ud)
         if (k >= sizeof r->ctype) k = sizeof r->ctype - 1;
         memcpy(r->ctype, ptr, k);
         r->ctype[k] = 0;
+    } else if (n > 6 && strncasecmp(ptr, "Date:", 5) == 0) {
+        const char *p = ptr + 5;
+        while (p < ptr + n && *p == ' ') p++;
+        size_t k = (size_t)(ptr + n - p);
+        while (k && (p[k - 1] == '\r' || p[k - 1] == '\n')) k--;
+        if (k >= sizeof r->date) k = sizeof r->date - 1;
+        memcpy(r->date, p, k);
+        r->date[k] = 0;
     } else if (n > 12 && strncasecmp(ptr, "Set-Cookie:", 11) == 0) {
         /* name=value; ...  (requests session keeps name/value only) */
         const char *p = ptr + 11;
@@ -202,4 +212,40 @@ void http_text(const http_resp *r, dbuf *out)
 {
     fix_encoding((const unsigned char *)r->body.p ? (const unsigned char *)r->body.p : (const unsigned char *)"",
                  r->body.len, r->ctype, out);
+}
+
+/* ---------------- wall-clock sync ---------------- */
+#define TIME_OK_MIN 1577836800L   /* 2020-01-01 */
+#define TIME_OK_MAX 4102444800L   /* 2100-01-01 */
+
+int http_time_sync(void)
+{
+    if (!g.time_url[0]) return -1;
+    http_resp r;
+    if (http_get(g.time_url, NULL, &r) != 0) {
+        http_resp_free(&r);
+        logmsg("time sync: GET %s failed", g.time_url);
+        return -1;
+    }
+    struct tm tm;
+    memset(&tm, 0, sizeof tm);
+    char *end = strptime(r.date, "%a, %d %b %Y %H:%M:%S", &tm);
+    time_t t = end ? timegm(&tm) : 0;
+    http_resp_free(&r);
+    if (t < TIME_OK_MIN || t > TIME_OK_MAX) {
+        logmsg("time sync: bad Date '%s'", r.date);
+        return -1;
+    }
+    time_t cur = time(NULL);
+    if (cur >= TIME_OK_MIN && cur < TIME_OK_MAX && t - cur > -3600 && t - cur < 3600) {
+        logmsg("time ok (drift %lds)", (long)(t - cur));
+        return 0;
+    }
+    struct timeval tv = { t, 0 };
+    if (settimeofday(&tv, NULL) != 0) {
+        logmsg("time sync: settimeofday: %s", strerror(errno));
+        return -1;
+    }
+    logmsg("time synced from %s: %s (%ld)", g.time_url, r.date, (long)t);
+    return 0;
 }

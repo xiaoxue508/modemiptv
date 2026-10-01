@@ -3,6 +3,7 @@
 #include "catchup.h"
 #include "common.h"
 #include "epgxml.h"
+#include "http.h"
 #include "platform.h"
 #include "playlist.h"
 #include "status.h"
@@ -296,9 +297,14 @@ static void *channels_thread(void *arg)
 static void *uplink_thread(void *arg)
 {
     (void)arg;
+    time_t last_sync = 0;
     for (;;) {
         sleep(60);
         uplink_ensure(1);
+        /* no RTC on the modem: 1970 boot clock or >24h drift re-syncs;
+           failed attempts retry every 60s (last_sync stays put) */
+        if (time(NULL) - last_sync > 24 * 3600 && http_time_sync() == 0)
+            last_sync = time(NULL);
     }
     return NULL;
 }
@@ -312,6 +318,11 @@ int server_run(void)
     status_init();
     cache_load_disk();
     plat_load_session(g.session);
+
+    /* no RTC: sync wall clock BEFORE the workers compute EPG date windows
+       (uplink first so the Date: GET binds the proven platform path) */
+    uplink_ensure(0);
+    http_time_sync();
 
     {
         struct stat st;

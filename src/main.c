@@ -729,6 +729,7 @@ static int cmd_config(int argc, char **argv, const char *path)
         KS("m3u_epg_url", g.m3u_epg_url);
         KS("bridge_tpl", g.bridge_tpl);
         KS("gen_url", g.gen_url);
+        KS("time_url", g.time_url);
         KN("ttl_progs", g.ttl_progs);
         KN("ttl_tvod", g.ttl_tvod);
         KN("ttl_epg", g.ttl_epg);

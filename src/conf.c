@@ -88,6 +88,7 @@ static void set_kv(const char *key, const char *val)
     else if (!strcmp(key, "xmltv_wait_s")) g.xmltv_wait_s = atoi(val);
     else if (!strcmp(key, "upstream_interface")) SETSTR(upstream_interface, val);
     else if (!strcmp(key, "uplink_policy")) g.uplink_policy = atoi(val);
+    else if (!strcmp(key, "time_url")) SETSTR(time_url, val);
     else if (!strcmp(key, "data_dir")) SETSTR(data_dir, val);
     else if (!strcmp(key, "cache_dir")) SETSTR(cache_dir, val);
     else if (!strcmp(key, "session")) SETSTR(session, val);
@@ -126,7 +127,7 @@ static const char *const conf_keys[] = {
     "bridge_tpl", "gen_url", "ttl_progs", "ttl_tvod", "ttl_epg",
     "ttl_channels", "min_channels", "epg_past", "epg_future", "worker_s",
     "port", "xmltv_wait_s", "upstream_interface", "uplink_policy", "data_dir",
-    "cache_dir", "session", "channels", "epg_file", NULL
+    "cache_dir", "session", "channels", "epg_file", "time_url", NULL
 };
 
 int conf_valid_key(const char *key)
@@ -158,4 +159,6 @@ void conf_resolve_paths(void)
     if (!g.session[0]) snprintf(g.session, sizeof g.session, "%s/session.json", g.data_dir);
     if (!g.channels[0]) snprintf(g.channels, sizeof g.channels, "%s/channels.json", g.data_dir);
     if (!g.epg_file[0]) snprintf(g.epg_file, sizeof g.epg_file, "%s/srcbox_epg.xml", g.cache_dir);
+    /* wall-clock sync source: same host+port as the (already reachable) EPG */
+    if (!g.time_url[0]) snprintf(g.time_url, sizeof g.time_url, "http://%s:8080/", g.epg_host);
 }

@@ -61,6 +61,7 @@ typedef struct {
     char upstream_interface[32];    /* bind+route platform traffic ("" = off) */
     int uplink_policy;              /* 0=bind only (modem: rule/table12 exists)
                                         1=program table1001 policy routes */
+    char time_url[128];             /* "" = derive http://<epg_host>:8080/ */
     int stbip_auto;                 /* conf stbip=auto -> take interface addr */
     char data_dir[96], cache_dir[96];
     char session[160], channels[160], epg_file[160];

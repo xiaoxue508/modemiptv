@@ -6,6 +6,7 @@ typedef struct {
     long code;
     dbuf body;
     char ctype[160];
+    char date[64];                 /* last Date: header (RFC1123) */
 } http_resp;
 
 void http_init(void);
@@ -16,6 +17,9 @@ int http_post(const char *url, const char *body, size_t body_len, const kv *hdrs
 void http_resp_free(http_resp *r);
 /* decode body with fix_encoding (epg.py _fix_encoding) into out */
 void http_text(const http_resp *r, dbuf *out);
+/* set wall clock from the Date: header of g.time_url (modem has no RTC;
+   EPG date windows depend on it). 0 = synced/already sane. */
+int http_time_sync(void);
 
 /* cookie jar: Python requests session dict semantics (name -> value) */
 void cookies_clear(void);
