@@ -1,0 +1,119 @@
+name: build
+
+on:
+  push:
+  workflow_dispatch:
+
+jobs:
+  host-test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install host build deps
+        run: sudo apt-get update && sudo apt-get install -y libcurl4-openssl-dev
+      - name: Build (host)
+        run: make -C src
+      - name: Selftest (T1/T2 sign golden vectors + gbk/json/urlenc/time)
+        run: ./src/iptvd selftest
+      - name: sign CLI check
+        run: |
+          got=$(./src/iptvd sign --challenge X --rnd 00000000)
+          want="DBEFF291C6F9F336DBA56F4C3E313014C36BFAAAC972A746627A663504958FC5A37B36D0543643915C475F3CED401439566C72EDB3B6156A7696ED90920BFD45F7BEBE133111C7AF9A00DCC97A1EB23C56EF5944658B38BFCD7286C8716F9A5BDABDDCFA033C48F9"
+          [ "$got" = "$want" ]
+
+  build-arm:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    needs: host-test
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Cache toolchain and libs
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/tc-arm
+          key: musleabi-cross-v1
+
+      - name: Fetch toolchain (arm-linux-musleabi, soft-float)
+        run: |
+          mkdir -p "$HOME/tc-arm"
+          if [ ! -x "$HOME/tc-arm/bin/arm-linux-musleabi-gcc" ]; then
+            curl -fL --retry 3 -o /tmp/tc.tgz https://musl.cc/arm-linux-musleabi-cross.tgz
+            tar -xzf /tmp/tc.tgz -C "$HOME/tc-arm" --strip-components=1
+          fi
+          "$HOME/tc-arm/bin/arm-linux-musleabi-gcc" --version
+          "$HOME/tc-arm/bin/arm-linux-musleabi-gcc" -dumpmachine
+
+      - name: Build static zlib
+        run: |
+          curl -fL --retry 3 -o /tmp/zlib.tar.gz \
+            https://github.com/madler/zlib/releases/download/v1.3.1/zlib-1.3.1.tar.gz
+          tar -xzf /tmp/zlib.tar.gz -C /tmp
+          cd /tmp/zlib-1.3.1
+          CC="$HOME/tc-arm/bin/arm-linux-musleabi-gcc" \
+            ./configure --prefix="$HOME/tc-arm/sysroot"
+          make -j"$(nproc)"
+          make install
+
+      - name: Build static libcurl (http only, no ssl)
+        run: |
+          curl -fL --retry 3 -o /tmp/curl.tar.gz https://curl.se/download/curl-8.11.1.tar.gz
+          tar -xzf /tmp/curl.tar.gz -C /tmp
+          cd /tmp/curl-8.11.1
+          export PATH="$HOME/tc-arm/bin:$PATH"
+          export CPPFLAGS="-I$HOME/tc-arm/sysroot/include"
+          export LDFLAGS="-L$HOME/tc-arm/sysroot/lib"
+          ./configure --host=arm-linux-musleabi --prefix="$HOME/tc-arm/sysroot" \
+            --enable-shared=no --enable-static=yes \
+            --without-ssl --without-libpsl --without-libidn2 \
+            --without-brotli --without-zstd --without-nghttp2 \
+            --without-libssh2 --without-librtmp \
+            --disable-ldap --disable-ldaps \
+            --disable-telnet --disable-dict --disable-imap --disable-pop3 \
+            --disable-smtp --disable-tftp --disable-mqtt --disable-file \
+            --disable-manual --disable-gopher
+          make -j"$(nproc)"
+          make install
+
+      - name: Build iptvd (static, armv7 soft-float)
+        run: |
+          make -C src clean
+          make -C src \
+            CC="$HOME/tc-arm/bin/arm-linux-musleabi-gcc" \
+            CFLAGS="-O2 -std=gnu99 -Wall -Wextra -D_GNU_SOURCE" \
+            LDFLAGS="-static -L$HOME/tc-arm/sysroot/lib" \
+            LDLIBS="-lcurl -lz -lpthread"
+          file src/iptvd
+          file src/iptvd | grep -q "ARM"
+          # device CPU has NO VFP: a hard-float ABI binary would SIGILL
+          if "$HOME/tc-arm/bin/arm-linux-musleabi-readelf" -A src/iptvd | grep -q "VFP_args"; then
+            echo "hard-float ABI detected, but modem CPU has no VFP"
+            exit 1
+          fi
+          echo "soft-float ABI ok"
+
+      - name: Smoke test under qemu-arm
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y qemu-user-static
+          qemu-arm-static src/iptvd --version
+          qemu-arm-static src/iptvd selftest
+
+      - name: Package artifact
+        run: |
+          mkdir -p out
+          cp src/iptvd out/iptvd-armv7
+          cp deploy/iptvd.conf out/
+          cp deploy/S99iptv out/
+          cd out
+          tar czf iptvd-armv7.tar.gz iptvd-armv7 iptvd.conf S99iptv
+          ls -la
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: iptvd-armv7
+          path: out/
+          if-no-files-found: error

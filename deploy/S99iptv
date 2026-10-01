@@ -1,0 +1,15 @@
+#!/bin/sh
+# modemiptv boot hook — installed once as /etc/rcS.d/S99iptv (rootfs is
+# read-only; see README "install the boot hook"). rcS executes every
+# /etc/rcS.d/S??* with "start" AFTER the interface scripts (S30network,
+# S99modules). cspd (and therefore nbif1) starts right after rcS; the
+# address may come up later — uplink_thread re-checks every 60s and the
+# channels worker retries login on its own, so a late nbif1 self-heals.
+
+[ "$1" = "start" ] || exit 0
+[ -x /userconfig/iptv/iptvd ] || exit 0
+
+sleep 15
+mkdir -p /tmp/iptvd
+/userconfig/iptv/iptvd --config /userconfig/iptv/iptvd.conf serve \
+    >/var/iptvd.log 2>&1 &
