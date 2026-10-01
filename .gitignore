@@ -2,3 +2,4 @@ src/*.o
 src/iptvd
 src/iptvd.exe
 *.log
+deploy/pattern.bin
