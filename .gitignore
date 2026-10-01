@@ -3,3 +3,4 @@ src/iptvd
 src/iptvd.exe
 *.log
 deploy/pattern.bin
+deploy/stress.bin
