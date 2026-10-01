@@ -22,6 +22,7 @@ verified on-device: busybox printf '%b' handles \\x00 (wc -c == real size).
 usage: push2onu.py LOCAL REMOTE [--chmod 755]
 """
 import re
+import select
 import socket
 import subprocess
 import sys
@@ -50,6 +51,9 @@ class TN:
         self.done = threading.Event()
         self.sizeline = ""
         self.lock = threading.Lock()
+        self.rx = 0
+        self.last_rx = 0.0
+        self.ticks = 0
 
     def feed(self, data):
         buf = bytearray()
@@ -86,6 +90,8 @@ class TN:
                 self.st = 0 if b == SE else 3
         if buf:
             with self.lock:
+                self.rx += len(buf)
+                self.last_rx = time.time()
                 self.tail += buf
                 if len(self.tail) > 65536:
                     del self.tail[:-8192]
@@ -97,13 +103,19 @@ class TN:
                     if m:
                         self.sizeline = m.group(1).decode()
                         self.done.set()
+                    elif b"@@ALIVE@@" in self.tail[-200:]:
+                        self.done.set()
 
     def reader(self):
+        # select-timed, never socket-timeout: the send side must stay fully
+        # blocking (backpressure from ash at ~1ms/line is normal, a timed
+        # sendall would abort a healthy transfer)
         while not self.done.is_set():
-            try:
-                d = self.s.recv(4096)
-            except socket.timeout:
+            r, _, _ = select.select([self.s], [], [], 1.0)
+            self.ticks += 1
+            if not r:
                 continue
+            d = self.s.recv(4096)
             if not d:
                 break
             self.feed(d)
@@ -188,6 +200,7 @@ def main():
     sock.settimeout(1.0)
     tn = TN(sock)
     login(tn, user, password)
+    sock.settimeout(None)  # send side: fully blocking, backpressure is normal
 
     cmd = ("mkdir -p %s; { while read -r l; do printf '%%b' \"$l\"; done; } > %s; "
            "echo SIZE=$(wc -c < %s); echo %s"
@@ -201,19 +214,79 @@ def main():
     th.start()
 
     total = len(data)
+    limit = int(os.environ.get("PUSH_LIMIT_BYTES", "0"))  # debug: cap bytes
+    delay = float(os.environ.get("PUSH_LINE_DELAY", "0"))  # debug: pace lines
+    echo_sync = os.environ.get("PUSH_ECHO_SYNC", "1") != "0"
     sent = 0
     t0 = time.time()
+    max_block = 0.0
+    # echo-sync: keep at most ~1 line in flight. The ONU's busybox-1.17.2
+    # telnetd DIES when the pty input queue backs up under a fast blast
+    # (probed: 20 lines fast ok, 25 lines fast kills the session, slow send
+    # of the same bytes ok; ash decodes everything but telnetd closes the
+    # socket before VEOF). Echo is produced by the line discipline
+    # immediately (independent of ash), so waiting for rx to catch up keeps
+    # both pty queues near-empty at ~1 RTT per line.
+    with tn.lock:
+        rx_base = tn.rx
+    need = rx_base
     for i in range(0, total, CHUNK):
+        if limit and sent >= limit:
+            break
         chunk = data[i:i + CHUNK]
         line = "".join("\\x%02x" % b for b in chunk) + "\n"
-        sock.sendall(line.encode("ascii"))
+        payload = line.encode("ascii")
+        ts = time.time()
+        sock.sendall(payload)
+        max_block = max(max_block, time.time() - ts)
+        if echo_sync:
+            # ONLCR: the echoed \n comes back as \r\n
+            need += len(payload) + 1
+            tw = time.time()
+            while tn.rx < need:
+                if time.time() - tw > 5:
+                    print("FAIL: echo sync stalled at byte %d/%d (rx=%d need=%d)"
+                          % (sent, total, tn.rx, need))
+                    return 1
+                # echo arrives within ~1ms on LAN: spin first (windows
+                # sleep(1) granularity would cost ~15ms/line otherwise)
+                if time.time() - tw < 0.003:
+                    continue
+                time.sleep(0.0005)
+        elif delay:
+            time.sleep(delay)
         sent += len(chunk)
         if i % (CHUNK * 200) == 0:
             print("  %d/%d" % (sent, total))
     sock.sendall(b"\x04")  # VEOF -> read loop EOF
 
     if not tn.wait_marker(90):
-        print("FAIL: marker not seen (last tail=%r)" % bytes(tn.tail[-400:]))
+        age = time.time() - tn.last_rx if tn.last_rx else -1
+        with tn.lock:
+            t = bytes(tn.tail)
+        print("FAIL: rx=%d last_rx=%.1fs ago ticks=%d max_send_block=%.3fs tail=%r"
+              % (tn.rx, age, tn.ticks, max_block, t[-300:]))
+        for m in re.finditer(rb"SIZE=", t):
+            i = m.start()
+            print("  SIZE context: %r" % t[max(0, i - 60):i + 80])
+        print("  PUSHDONE count:", t.count(MARKER.encode()))
+        # is the session even alive? ask the shell
+        tn.done.clear()
+        with tn.lock:
+            tn.tail.clear()
+        rx_before = tn.rx
+        try:
+            sock.sendall(b"echo @@ALIVE@@\r\n")
+        except Exception as e:
+            print("FAIL: send after stall:", e)
+            return 1
+        alive = tn.wait_marker(8)
+        print("  probe: alive=%s rx_delta=%d" % (alive, tn.rx - rx_before))
+        if alive:
+            print("FAIL: session ALIVE but SIZE marker missing (VEOF lost?) tail=%r"
+                  % bytes(tn.tail[-300:]))
+        else:
+            print("FAIL: session DEAD (no echo of probe either)")
         return 1
     got = int(tn.sizeline) if tn.sizeline else -1
     took = time.time() - t0
