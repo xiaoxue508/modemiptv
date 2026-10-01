@@ -18,7 +18,7 @@ jobs:
         run: ./src/iptvd selftest
       - name: sign CLI check
         run: |
-          got=$(./src/iptvd sign --challenge X --rnd 00000000)
+          got=$(./src/iptvd sign --challenge 0123456789ABCDEF --rnd 00000000)
           want="DBEFF291C6F9F336DBA56F4C3E313014C36BFAAAC972A746627A663504958FC5A37B36D0543643915C475F3CED401439566C72EDB3B6156A7696ED90920BFD45F7BEBE133111C7AF9A00DCC97A1EB23C56EF5944658B38BFCD7286C8716F9A5BDABDDCFA033C48F9"
           [ "$got" = "$want" ]
 
